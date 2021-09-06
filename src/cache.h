@@ -69,6 +69,11 @@ struct Cache {
 
     /** \brief the FUSE filesystem path to the remote file*/
     char *fs_path;
+
+    /** \brief mutex for associated with the TransferStruct */
+    pthread_mutex_t ts_lock;
+    /** \brief attribute associated with the mutex */
+    pthread_mutexattr_t ts_lock_attr;
 };
 
 /**

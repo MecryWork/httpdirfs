@@ -1,7 +1,7 @@
 #include "link.h"
 
 #include "log.h"
-#include "memcache.h"
+#include "transferstruct.h"
 #include "util.h"
 
 #include <gumbo.h>
@@ -23,10 +23,10 @@ int ROOT_LINK_OFFSET = 0;
 
 /**
  * \brief LinkTable generation priority lock
- * \details This allows LinkTable generation to be run exclusively. This
- * effectively gives LinkTable generation priority over file transfer.
+ * \details One allows one instance of path_to_Link() to be run to ensure the
+ * uniqueness of the links
  */
-static pthread_mutex_t link_lock;
+static pthread_mutex_t linktable_lock;
 
 /**
  * \brief create a new Link
@@ -45,6 +45,9 @@ static Link *Link_new(const char *linkname, LinkType type)
     if (*c == '/') {
         *c = '\0';
     }
+
+    link->ts = NULL;
+    link->cf = NULL;
 
     return link;
 }
@@ -238,7 +241,7 @@ static LinkTable *single_LinkTable_new(const char *url)
 
 LinkTable *LinkSystem_init(const char *raw_url)
 {
-    if (pthread_mutex_init(&link_lock, NULL)) {
+    if (pthread_mutex_init(&linktable_lock, NULL)) {
         lprintf(error, "link_lock initialisation failed!\n");
     }
     /*
@@ -466,10 +469,15 @@ static void LinkTable_invalid_reset(LinkTable *linktbl)
     lprintf(debug, "%d invalid links\n", j);
 }
 
+static void Link_free(Link *link)
+{
+    FREE(link);
+}
+
 void LinkTable_free(LinkTable *linktbl)
 {
     for (int i = 0; i < linktbl->num; i++) {
-        FREE(linktbl->links[i]);
+        Link_free(linktbl->links[i]);
     }
     FREE(linktbl->links);
     FREE(linktbl);
@@ -807,7 +815,7 @@ Link *path_to_Link(const char *path)
     lprintf(link_lock_debug,
             "thread %x: locking link_lock;\n", pthread_self());
 
-    PTHREAD_MUTEX_LOCK(&link_lock);
+    PTHREAD_MUTEX_LOCK(&linktable_lock);
     char *new_path = strndup(path, MAX_PATH_LEN);
     if (!new_path) {
         lprintf(fatal, "cannot allocate memory\n");
@@ -817,7 +825,7 @@ Link *path_to_Link(const char *path)
 
     lprintf(link_lock_debug,
             "thread %x: unlocking link_lock;\n", pthread_self());
-    PTHREAD_MUTEX_UNLOCK(&link_lock);
+    PTHREAD_MUTEX_UNLOCK(&linktable_lock);
     return link;
 }
 
@@ -829,7 +837,7 @@ TransferStruct Link_download_full(Link *link)
     TransferStruct ts;
     ts.curr_size = 0;
     ts.data = NULL;
-    ts.type = DATA;
+    ts.type = META;
     ts.transferring = 1;
 
     CURLcode ret = curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *) &ts);
@@ -951,21 +959,69 @@ range requests\n");
     return recv;
 }
 
+/**
+ * \brief The background transfer spinner for transfer_blocking()
+ */
+static void *Link_download_from_config(void *arg)
+{
+    DownloadConfig *config = (DownloadConfig *) arg;
+    config->recv = Link_download(config->link,
+                              config->output_buf,
+                              config->req_size,
+                              config->offset);
+    if (pthread_detach(pthread_self())) {
+        lprintf(error, "%s\n", strerror(errno));
+    };
+    pthread_exit(NULL);
+}
+
+void Link_download_bg(DownloadConfig *config)
+{
+    pthread_create(&config->thread,
+                   NULL,
+                   Link_download_from_config,
+                   (void *) config);
+}
+
 long Link_download(Link *link, char *output_buf, size_t req_size, off_t offset)
 {
     TransferStruct ts;
     ts.curr_size = 0;
     ts.data = NULL;
-    ts.type = DATA;
+    ts.type = CONTENT;
     ts.transferring = 1;
+    ts.link = link;
 
     TransferStruct header;
     header.curr_size = 0;
     header.data = NULL;
+    header.type = META;
 
     CURL *curl = Link_download_curl_setup(link, req_size, offset, &header, &ts);
 
+    if (link->cf) {
+        if (pthread_mutexattr_setpshared(&link->cf->ts_lock_attr,
+                                        PTHREAD_PROCESS_SHARED)) {
+            lprintf(fatal, "could not set ts_lock_attr!\n");
+        }
+        if (pthread_mutex_init(&link->cf->ts_lock,
+                            &link->cf->ts_lock_attr)) {
+            lprintf(fatal, "ts_lock initialisation failed!\n");
+        }
+    }
+
+    link->ts = &ts;
     transfer_blocking(curl);
+    link->ts = NULL;
+
+    if (link->cf) {
+        if (pthread_mutex_destroy(&link->cf->ts_lock)) {
+            lprintf(fatal, "could not destroy ts_lock!\n");
+        }
+        if (pthread_mutexattr_destroy(&link->cf->ts_lock_attr)) {
+            lprintf(fatal, "could not destroy ts_lock_attr!\n");
+        }
+    }
 
     curl_off_t recv = Link_download_cleanup(curl, &header);
 

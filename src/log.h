@@ -13,14 +13,14 @@ typedef enum {
     link_lock_debug = 1 << 5,
     network_lock_debug = 1 << 6,
     cache_lock_debug = 1 << 7,
-    memcache_debug = 1 << 8,
+    transferstruct_debug = 1 << 8,
     libcurl_debug = 1 << 9,
 } LogType;
 
 /**
  * \brief The default log level
  */
-#define DEFAULT_LOG_LEVEL fatal | error | warning | info
+#define DEFAULT_LOG_LEVEL fatal | error | warning | info | debug | transferstruct_debug | cache_lock_debug
 
 /**
  * \brief Get the log level from the environment.
