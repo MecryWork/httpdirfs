@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "transferstruct.h"
 #include "util.h"
 
 #include <sys/stat.h>
@@ -326,7 +327,7 @@ static long Data_size(const char *fn)
  *  - negative values on error,
  *  - otherwise, the number of bytes read.
  */
-static long Data_read(Cache *cf, uint8_t *buf, off_t len, off_t offset)
+static long Data_read(Cache *cf, char *const buf, off_t len, off_t offset)
 {
     if (len == 0) {
         lprintf(error, "requested to read 0 byte!\n");
@@ -933,6 +934,68 @@ static int Seg_exist(Cache *cf, off_t offset)
     return cf->seg[byte];
 }
 
+typedef struct {
+    Cache *cf;
+    off_t dl_offset;
+    pthread_t thread;
+} DownloadConfig;
+
+/**
+ * \brief Check if we have received enough data for a segment
+ * \details Conditions:
+ *  1. received the exact amount as the segment size.
+ *  2. offset is the last segment
+ */
+static int Seg_valid(Cache *cf, long recv, off_t dl_offset)
+{
+    return (recv == cf->blksz) ||
+           (dl_offset == (cf->content_length / cf->blksz * cf->blksz));
+}
+
+static void *Cache_cfg_bgdl(void *arg)
+{
+    DownloadConfig *config = (DownloadConfig *) arg;
+    Cache *cf = config->cf;
+    off_t dl_offset = config->dl_offset;
+
+    char *recv_buf = CALLOC(cf->blksz, sizeof(uint8_t));
+
+    long recv = Link_download(cf->link,
+                              recv_buf,
+                              cf->blksz,
+                              dl_offset);
+    if (recv < 0) {
+        lprintf(error, "thread %x received %ld bytes, \
+                which does't make sense\n", pthread_self(), recv);
+    }
+
+    if (Seg_valid(cf, recv, dl_offset)) {
+        Data_write(cf, recv_buf, recv, dl_offset);
+    } else {
+        lprintf(error, "received %ld rather than %ld, possible network \
+error.\n", recv, cf->blksz);
+    }
+
+    FREE(recv_buf);
+
+    lprintf(cache_lock_debug,
+            "thread %x: unlocking w_lock;\n", pthread_self());
+    PTHREAD_MUTEX_UNLOCK(&config->cf->w_lock);
+
+    if (pthread_detach(pthread_self())) {
+        lprintf(error, "%s\n", strerror(errno));
+    };
+    pthread_exit(NULL);
+}
+
+void Cache_cfg_bgdl_spawner(DownloadConfig *config)
+{
+    pthread_create(&config->thread,
+                   NULL,
+                   Cache_cfg_bgdl,
+                   (void *) config);
+}
+
 /**
  * \brief Background download function
  * \details If we are requesting the data from the second half of the current
@@ -956,9 +1019,7 @@ static void *Cache_bgdl(void *arg)
 which does't make sense\n", pthread_self(), recv);
     }
 
-    if ((recv == cf->blksz) ||
-            (cf->next_dl_offset ==
-             (cf->content_length / cf->blksz * cf->blksz))) {
+    if (Seg_valid(cf, recv, cf->next_dl_offset)) {
         Data_write(cf, recv_buf, recv, cf->next_dl_offset);
     } else {
         lprintf(error, "received %ld rather than %ld, possible network \
@@ -996,7 +1057,7 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
      * ------------- Check if the segment already exists --------------
      */
     if (Seg_exist(cf, dl_offset)) {
-        send = Data_read(cf, (uint8_t *) output_buf, len, offset_start);
+        send = Data_read(cf, output_buf, len, offset_start);
         goto bgdl;
     } else {
         /*
@@ -1012,7 +1073,7 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
              * The segment now exists - it was downloaded by another
              * download thread. Send it off and unlock the I/O
              */
-            send = Data_read(cf, (uint8_t *) output_buf, len, offset_start);
+            send = Data_read(cf, output_buf, len, offset_start);
 
             lprintf(cache_lock_debug,
                     "thread %x: unlocking w_lock;\n", pthread_self());
@@ -1026,50 +1087,16 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
      * ------------------ Download the segment ---------------------
      */
 
-    char *recv_buf = CALLOC(cf->blksz, sizeof(uint8_t));
-    lprintf(debug, "thread %x: spawned.\n ", pthread_self());
-
-    long recv = 0;
-
-    if (!cf->link->ts) {
-        config.link = cf->link;
-        config.output_buf = recv_buf;
-        config.req_size = cf->blksz;
-        config.offset = dl_offset;
-        Link_download_bg(&config);
-    } else {
-        ;
+    /* cf->ts is set and unset in Link_download() */
+    if (!cf->ts) {
+        config.cf = cf;
+        config.dl_offset = dl_offset;
+        /* Cache_cfg_bgdl() runs Link_download() in the background */
+        Cache_cfg_bgdl_spawner(&config);
     }
 
-    while (!config.recv)
-        ;
+    send = TransferStruct_read(cf->ts, output_buf, len, offset_start);
 
-    recv = config.recv;
-
-    if (recv < 0) {
-        lprintf(error, "thread %x received %ld bytes, \
-which does't make sense\n", pthread_self(), recv);
-    }
-    /*
-     * check if we have received enough data, write it to the disk
-     *
-     * Condition 1: received the exact amount as the segment size.
-     * Condition 2: offset is the last segment
-     */
-    if ((recv == cf->blksz) ||
-            (dl_offset == (cf->content_length / cf->blksz * cf->blksz))) {
-        Data_write(cf, recv_buf, recv, dl_offset);
-    } else {
-        lprintf(error, "received %ld rather than %ld, possible network \
-error.\n", recv, cf->blksz);
-    }
-    FREE(recv_buf);
-    send = Data_read(cf, (uint8_t *) output_buf, len, offset_start);
-
-    lprintf(cache_lock_debug,
-            "thread %x: unlocking w_lock;\n", pthread_self());
-    PTHREAD_MUTEX_UNLOCK(&cf->w_lock);
-    return send;
     /*
      * ----------- Download the next segment in background -----------------
      */
@@ -1081,7 +1108,8 @@ bgdl:
         /*
          * Stop the spawning of multiple background pthreads
          */
-        if (!pthread_mutex_trylock(&cf->bgt_lock)) {
+        if (!pthread_mutex_trylock(&cf->bgt_lock) &&
+            !pthread_mutex_trylock(&cf->w_lock)) {
             lprintf(cache_lock_debug,
                     "thread %x: trylocked bgt_lock;\n", pthread_self());
             cf->next_dl_offset = next_dl_offset;

@@ -56,18 +56,7 @@ struct Link {
     Cache *cf;
     /** \brief Stores *sonic related data */
     Sonic sonic;
-    /** \brief The ephemerally associated TransferStruct */
-    TransferStruct *ts;
 };
-
-typedef struct {
-    Link *link;
-    char *output_buf;
-    size_t req_size;
-    off_t offset;
-    volatile long recv;
-    pthread_t thread;
-} DownloadConfig;
 
 /**
  * \brief root link table
@@ -107,8 +96,6 @@ long path_download(const char *path, char *output_buf, size_t size,
  */
 long Link_download(Link *link, char *output_buf, size_t req_size,
                    off_t offset);
-
-void Link_download_bg(DownloadConfig *config);
 
 /**
  * \brief find the link associated with a path

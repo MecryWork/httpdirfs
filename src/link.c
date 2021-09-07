@@ -46,7 +46,6 @@ static Link *Link_new(const char *linkname, LinkType type)
         *c = '\0';
     }
 
-    link->ts = NULL;
     link->cf = NULL;
 
     return link;
@@ -959,30 +958,6 @@ range requests\n");
     return recv;
 }
 
-/**
- * \brief The background transfer spinner for transfer_blocking()
- */
-static void *Link_download_from_config(void *arg)
-{
-    DownloadConfig *config = (DownloadConfig *) arg;
-    config->recv = Link_download(config->link,
-                              config->output_buf,
-                              config->req_size,
-                              config->offset);
-    if (pthread_detach(pthread_self())) {
-        lprintf(error, "%s\n", strerror(errno));
-    };
-    pthread_exit(NULL);
-}
-
-void Link_download_bg(DownloadConfig *config)
-{
-    pthread_create(&config->thread,
-                   NULL,
-                   Link_download_from_config,
-                   (void *) config);
-}
-
 long Link_download(Link *link, char *output_buf, size_t req_size, off_t offset)
 {
     TransferStruct ts;
@@ -1000,6 +975,7 @@ long Link_download(Link *link, char *output_buf, size_t req_size, off_t offset)
     CURL *curl = Link_download_curl_setup(link, req_size, offset, &header, &ts);
 
     if (link->cf) {
+        link->cf->ts = &ts;
         if (pthread_mutexattr_setpshared(&link->cf->ts_lock_attr,
                                         PTHREAD_PROCESS_SHARED)) {
             lprintf(fatal, "could not set ts_lock_attr!\n");
@@ -1010,11 +986,10 @@ long Link_download(Link *link, char *output_buf, size_t req_size, off_t offset)
         }
     }
 
-    link->ts = &ts;
     transfer_blocking(curl);
-    link->ts = NULL;
 
     if (link->cf) {
+        link->cf->ts = NULL;
         if (pthread_mutex_destroy(&link->cf->ts_lock)) {
             lprintf(fatal, "could not destroy ts_lock!\n");
         }
