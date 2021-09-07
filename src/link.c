@@ -979,26 +979,12 @@ long Link_download(Link *link, char *output_buf, size_t req_size, off_t offset)
     if (link->cf) {
         lprintf(debug, "link->cf: %x", link->cf);
         link->cf->ts = &ts;
-        if (pthread_mutexattr_setpshared(&link->cf->ts_lock_attr,
-                                        PTHREAD_PROCESS_SHARED)) {
-            lprintf(fatal, "could not set ts_lock_attr!\n");
-        }
-        if (pthread_mutex_init(&link->cf->ts_lock,
-                            &link->cf->ts_lock_attr)) {
-            lprintf(fatal, "ts_lock initialisation failed!\n");
-        }
     }
 
     transfer_blocking(curl);
 
     if (link->cf) {
         link->cf->ts = NULL;
-        if (pthread_mutex_destroy(&link->cf->ts_lock)) {
-            lprintf(fatal, "could not destroy ts_lock!\n");
-        }
-        if (pthread_mutexattr_destroy(&link->cf->ts_lock_attr)) {
-            lprintf(fatal, "could not destroy ts_lock_attr!\n");
-        }
     }
 
     curl_off_t recv = Link_download_cleanup(curl, &header);

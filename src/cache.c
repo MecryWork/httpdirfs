@@ -511,6 +511,16 @@ static Cache *Cache_alloc()
         lprintf(fatal, "bgt_lock initialisation failed!\n");
     }
 
+    if (pthread_mutexattr_setpshared(&cf->ts_lock_attr,
+                                        PTHREAD_PROCESS_SHARED)) {
+        lprintf(fatal, "could not set ts_lock_attr!\n");
+    }
+
+    if (pthread_mutex_init(&cf->ts_lock,
+                            &cf->ts_lock_attr)) {
+        lprintf(fatal, "ts_lock initialisation failed!\n");
+     }
+
     return cf;
 }
 
@@ -533,6 +543,14 @@ static void Cache_free(Cache *cf)
 
     if (pthread_mutexattr_destroy(&cf->bgt_lock_attr)) {
         lprintf(fatal, "could not destroy bgt_lock_attr!\n");
+    }
+
+    if (pthread_mutex_destroy(&cf->ts_lock)) {
+        lprintf(fatal, "could not destroy ts_lock!\n");
+    }
+
+    if (pthread_mutexattr_destroy(&cf->ts_lock_attr)) {
+        lprintf(fatal, "could not destroy ts_lock_attr!\n");
     }
 
     if (cf->path) {
@@ -958,6 +976,7 @@ static void *Cache_cfg_bgdl(void *arg)
     DownloadConfig *config = (DownloadConfig *) arg;
     Cache *cf = config->cf;
     off_t dl_offset = config->dl_offset;
+    lprintf(debug, "cf: %x\n", cf);
 
     char *recv_buf = CALLOC(cf->blksz, sizeof(uint8_t));
 
@@ -982,7 +1001,7 @@ error.\n", recv, cf->blksz);
 
     lprintf(cache_lock_debug,
             "thread %x: unlocking w_lock;\n", pthread_self());
-    PTHREAD_MUTEX_UNLOCK(&config->cf->w_lock);
+    PTHREAD_MUTEX_UNLOCK(&cf->w_lock);
 
     if (pthread_detach(pthread_self())) {
         lprintf(error, "%s\n", strerror(errno));
@@ -1092,6 +1111,7 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
     /* cf->ts is set and unset in Link_download() */
     if (!cf->ts) {
         config.cf = cf;
+        lprintf(debug, "cf: %x\n", cf);
         config.dl_offset = dl_offset;
         config.recv = 0;
         /* Cache_cfg_bgdl() runs Link_download() in the background */
@@ -1106,7 +1126,7 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
      * ----------- Download the next segment in background -----------------
      */
 bgdl:
-    ;
+    return send;
     off_t next_dl_offset = round_div(offset_start, cf->blksz) * cf->blksz;
     if ((next_dl_offset > dl_offset) && !Seg_exist(cf, next_dl_offset)
             && next_dl_offset < cf->content_length) {
