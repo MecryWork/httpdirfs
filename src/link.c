@@ -920,6 +920,7 @@ static CURL *Link_download_curl_setup(Link *link, size_t req_size, off_t offset,
 
 static curl_off_t Link_download_cleanup(CURL *curl, TransferStruct *header)
 {
+    lprintf(debug, "\n");
     /*
      * Check for range seek support
      */
@@ -966,6 +967,7 @@ long Link_download(Link *link, char *output_buf, size_t req_size, off_t offset)
     ts.type = CONTENT;
     ts.transferring = 1;
     ts.link = link;
+    ts.cf = link->cf;
 
     TransferStruct header;
     header.curr_size = 0;
@@ -975,6 +977,7 @@ long Link_download(Link *link, char *output_buf, size_t req_size, off_t offset)
     CURL *curl = Link_download_curl_setup(link, req_size, offset, &header, &ts);
 
     if (link->cf) {
+        lprintf(debug, "link->cf: %x", link->cf);
         link->cf->ts = &ts;
         if (pthread_mutexattr_setpshared(&link->cf->ts_lock_attr,
                                         PTHREAD_PROCESS_SHARED)) {

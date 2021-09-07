@@ -11,6 +11,7 @@ size_t write_memory_callback(void *recv_data, size_t size, size_t nmemb,
 {
     TransferStruct *ts = (TransferStruct *) userp;
     if (ts->type == CONTENT && ts->cf) {
+        lprintf(transferstruct_debug, "ts->cf: %x", ts->cf);
         lprintf(transferstruct_debug, "thread %x locking ts_lock\n",
                 pthread_self());
         PTHREAD_MUTEX_LOCK(&ts->cf->ts_lock);

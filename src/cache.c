@@ -938,6 +938,7 @@ typedef struct {
     Cache *cf;
     off_t dl_offset;
     pthread_t thread;
+    volatile long recv;
 } DownloadConfig;
 
 /**
@@ -964,6 +965,7 @@ static void *Cache_cfg_bgdl(void *arg)
                               recv_buf,
                               cf->blksz,
                               dl_offset);
+    config->recv = recv;
     if (recv < 0) {
         lprintf(error, "thread %x received %ld bytes, \
                 which does't make sense\n", pthread_self(), recv);
@@ -1011,7 +1013,7 @@ static void *Cache_bgdl(void *arg)
     PTHREAD_MUTEX_LOCK(&cf->w_lock);
 
     char *recv_buf = CALLOC(cf->blksz, sizeof(uint8_t));
-    lprintf(debug, "thread %x spawned.\n ", pthread_self());
+    lprintf(debug, "-----------------------thread %x spawned-----------------.\n ", pthread_self());
     long recv = Link_download(cf->link, (char *) recv_buf, cf->blksz,
                               cf->next_dl_offset);
     if (recv < 0) {
@@ -1065,7 +1067,7 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
          */
 
         lprintf(cache_lock_debug,
-                "thread %ld: locking w_lock;\n", pthread_self());
+                "thread %x: locking w_lock;\n", pthread_self());
         PTHREAD_MUTEX_LOCK(&cf->w_lock);
 
         if (Seg_exist(cf, dl_offset)) {
@@ -1091,11 +1093,14 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
     if (!cf->ts) {
         config.cf = cf;
         config.dl_offset = dl_offset;
+        config.recv = 0;
         /* Cache_cfg_bgdl() runs Link_download() in the background */
         Cache_cfg_bgdl_spawner(&config);
     }
 
-    send = TransferStruct_read(cf->ts, output_buf, len, offset_start);
+    while (!config.recv)
+        ;
+    send = Data_read(cf, output_buf, len, offset_start);
 
     /*
      * ----------- Download the next segment in background -----------------
