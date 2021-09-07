@@ -1118,9 +1118,7 @@ long Cache_read(Cache *cf, char *const output_buf, const off_t len,
         Cache_cfg_bgdl_spawner(&config);
     }
 
-    while (!config.recv)
-        ;
-    send = Data_read(cf, output_buf, len, offset_start);
+    send = TransferStruct_read(cf->ts, output_buf, len, offset_start);
 
     /*
      * ----------- Download the next segment in background -----------------
